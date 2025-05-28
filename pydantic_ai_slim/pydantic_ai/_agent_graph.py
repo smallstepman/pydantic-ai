@@ -64,12 +64,14 @@ class GraphAgentState:
     retries: int
     run_step: int
 
-    def increment_retries(self, max_result_retries: int) -> None:
+    def increment_retries(self, max_result_retries: int, error: Exception | None = None) -> None:
         self.retries += 1
         if self.retries > max_result_retries:
-            raise exceptions.UnexpectedModelBehavior(
-                f'Exceeded maximum retries ({max_result_retries}) for result validation'
-            )
+            message = f'Exceeded maximum retries ({max_result_retries}) for result validation'
+            if error:
+                raise exceptions.UnexpectedModelBehavior(message) from error
+            else:
+                raise exceptions.UnexpectedModelBehavior(message)
 
 
 @dataclasses.dataclass
@@ -222,27 +224,40 @@ async def _prepare_request_parameters(
     ctx: GraphRunContext[GraphAgentState, GraphAgentDeps[DepsT, NodeRunEndT]],
 ) -> models.ModelRequestParameters:
     """Build tools and create an agent model."""
-    function_tool_defs: list[ToolDefinition] = []
+    function_tool_defs_map: dict[str, ToolDefinition] = {}
 
     run_context = build_run_context(ctx)
 
     async def add_tool(tool: Tool[DepsT]) -> None:
         ctx = run_context.replace_with(retry=tool.current_retry, tool_name=tool.name)
         if tool_def := await tool.prepare_tool_def(ctx):
-            function_tool_defs.append(tool_def)
+            # prepare_tool_def may change tool_def.name
+            if tool_def.name in function_tool_defs_map:
+                if tool_def.name != tool.name:
+                    # Prepare tool def may have renamed the tool
+                    raise exceptions.UserError(
+                        f"Renaming tool '{tool.name}' to '{tool_def.name}' conflicts with existing tool."
+                    )
+                else:
+                    raise exceptions.UserError(f'Tool name conflicts with existing tool: {tool.name!r}.')
+            function_tool_defs_map[tool_def.name] = tool_def
 
     async def add_mcp_server_tools(server: MCPServer) -> None:
         if not server.is_running:
             raise exceptions.UserError(f'MCP server is not running: {server}')
         tool_defs = await server.list_tools()
-        # TODO(Marcelo): We should check if the tool names are unique. If not, we should raise an error.
-        function_tool_defs.extend(tool_defs)
+        for tool_def in tool_defs:
+            if tool_def.name in function_tool_defs_map:
+                raise exceptions.UserError(
+                    f"MCP Server '{server}' defines a tool whose name conflicts with existing tool: {tool_def.name!r}. Consider using `tool_prefix` to avoid name conflicts."
+                )
+            function_tool_defs_map[tool_def.name] = tool_def
 
     await asyncio.gather(
         *map(add_tool, ctx.deps.function_tools.values()),
         *map(add_mcp_server_tools, ctx.deps.mcp_servers),
     )
-
+    function_tool_defs = list(function_tool_defs_map.values())
     if ctx.deps.prepare_tools:
         # Prepare the tools using the provided function
         # This also acts over tool definitions pulled from MCP servers
@@ -476,6 +491,7 @@ class CallToolsNode(AgentNode[DepsT, NodeRunEndT]):
         tool_calls: list[_messages.ToolCallPart],
     ) -> AsyncIterator[_messages.HandleResponseEvent]:
         output_schema = ctx.deps.output_schema
+        run_context = build_run_context(ctx)
 
         # first, look for the output tool call
         final_result: result.FinalResult[NodeRunEndT] | None = None
@@ -483,12 +499,12 @@ class CallToolsNode(AgentNode[DepsT, NodeRunEndT]):
         if output_schema is not None:
             for call, output_tool in output_schema.find_tool(tool_calls):
                 try:
-                    result_data = output_tool.validate(call)
+                    result_data = await output_tool.process(call, run_context)
                     result_data = await _validate_output(result_data, ctx, call)
                 except _output.ToolRetryError as e:
                     # TODO: Should only increment retry stuff once per node execution, not for each tool call
                     #   Also, should increment the tool-specific retry count rather than the run retry count
-                    ctx.state.increment_retries(ctx.deps.max_result_retries)
+                    ctx.state.increment_retries(ctx.deps.max_result_retries, e)
                     parts.append(e.tool_retry)
                 else:
                     final_result = result.FinalResult(result_data, call.tool_name, call.tool_call_id)
@@ -510,7 +526,6 @@ class CallToolsNode(AgentNode[DepsT, NodeRunEndT]):
         else:
             if tool_responses:
                 parts.extend(tool_responses)
-            run_context = build_run_context(ctx)
             instructions = await ctx.deps.get_instructions(run_context)
             self._next_node = ModelRequestNode[DepsT, NodeRunEndT](
                 _messages.ModelRequest(parts=parts, instructions=instructions)
@@ -552,7 +567,7 @@ class CallToolsNode(AgentNode[DepsT, NodeRunEndT]):
 
             result_data = await _validate_output(result_data, ctx, None)
         except _output.ToolRetryError as e:
-            ctx.state.increment_retries(ctx.deps.max_result_retries)
+            ctx.state.increment_retries(ctx.deps.max_result_retries, e)
             return ModelRequestNode[DepsT, NodeRunEndT](_messages.ModelRequest(parts=[e.tool_retry]))
         else:
             return self._handle_final_result(ctx, result.FinalResult(result_data, None, None), [])

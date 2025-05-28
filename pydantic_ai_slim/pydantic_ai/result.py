@@ -89,7 +89,9 @@ class AgentStream(Generic[AgentDepsT, OutputDataT]):
                 )
 
             call, output_tool = match
-            result_data = output_tool.validate(call, allow_partial=allow_partial, wrap_validation_errors=False)
+            result_data = await output_tool.process(
+                call, self._run_ctx, allow_partial=allow_partial, wrap_validation_errors=False
+            )
         else:
             text = '\n\n'.join(x.content for x in message.parts if isinstance(x, _messages.TextPart))
 
@@ -403,7 +405,9 @@ class StreamedRunResult(Generic[AgentDepsT, OutputDataT]):
                 )
 
             call, output_tool = match
-            result_data = output_tool.validate(call, allow_partial=allow_partial, wrap_validation_errors=False)
+            result_data = await output_tool.process(
+                call, self._run_ctx, allow_partial=allow_partial, wrap_validation_errors=False
+            )
         else:
             text = '\n\n'.join(x.content for x in message.parts if isinstance(x, _messages.TextPart))
 
@@ -485,21 +489,23 @@ class StreamedRunResult(Generic[AgentDepsT, OutputDataT]):
                 yield ''.join(deltas)
 
 
-@dataclass
+@dataclass(repr=False)
 class FinalResult(Generic[OutputDataT]):
     """Marker class storing the final output of an agent run and associated metadata."""
 
     output: OutputDataT
     """The final result data."""
-    tool_name: str | None
+    tool_name: str | None = None
     """Name of the final output tool; `None` if the output came from unstructured text content."""
-    tool_call_id: str | None
+    tool_call_id: str | None = None
     """ID of the tool call that produced the final output; `None` if the output came from unstructured text content."""
 
     @property
     @deprecated('`data` is deprecated, use `output` instead.')
     def data(self) -> OutputDataT:
         return self.output
+
+    __repr__ = _utils.dataclasses_no_defaults_repr
 
 
 def _get_usage_checking_stream_response(
