@@ -99,8 +99,8 @@ class AgentStream(Generic[AgentDepsT, OutputDataT]):
                 # The following cast is safe because we know `str` is an allowed output type
                 result_data = cast(OutputDataT, text)
             else:
-                result_data = self._output_schema.validate(
-                    text, allow_partial=allow_partial, wrap_validation_errors=False
+                result_data = await self._output_schema.process(
+                    text, self._run_ctx, allow_partial=allow_partial, wrap_validation_errors=False
                 )
 
         for validator in self._output_validators:
@@ -415,8 +415,8 @@ class StreamedRunResult(Generic[AgentDepsT, OutputDataT]):
                 # The following cast is safe because we know `str` is an allowed output type
                 result_data = cast(OutputDataT, text)
             else:
-                result_data = self._output_schema.validate(
-                    text, allow_partial=allow_partial, wrap_validation_errors=False
+                result_data = await self._output_schema.process(
+                    text, self._run_ctx, allow_partial=allow_partial, wrap_validation_errors=False
                 )
 
         for validator in self._output_validators:

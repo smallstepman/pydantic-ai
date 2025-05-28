@@ -31,7 +31,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
-from pydantic_ai.result import ToolOutput, Usage
+from pydantic_ai.result import Usage
 from pydantic_ai.tools import ToolDefinition
 
 from .conftest import IsDatetime, IsNow, IsStr, TestEnv

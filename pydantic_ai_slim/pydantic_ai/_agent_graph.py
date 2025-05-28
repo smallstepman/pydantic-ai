@@ -558,7 +558,8 @@ class CallToolsNode(AgentNode[DepsT, NodeRunEndT]):
                 # The following cast is safe because we know `str` is an allowed result type
                 result_data = cast(NodeRunEndT, text)
             elif output_schema.allow_json_text_output:
-                result_data = output_schema.validate(text)
+                run_context = build_run_context(ctx)
+                result_data = await output_schema.process(text, run_context)
             else:
                 m = _messages.RetryPromptPart(
                     content='Plain text responses are not permitted, please include your response in a tool call',
