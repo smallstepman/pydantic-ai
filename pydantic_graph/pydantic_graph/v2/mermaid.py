@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic_graph.v2.decision import Decision
+from pydantic_graph.v2.id_types import NodeId
 from pydantic_graph.v2.join import Join
 from pydantic_graph.v2.node import EndNode, Spread, StartNode
 from pydantic_graph.v2.step import Step
@@ -66,9 +67,10 @@ def generate_code(
     lines.append('stateDiagram-v2')
     if direction is not None:
         lines.append(f'  direction {direction}')
+
+    broadcast_forks = dict[NodeId, NodeId]()
     for node in graph.nodes.values():
         # List all nodes in order they were created
-        #
         node_lines: list[str] = []
         if isinstance(node, (StartNode, EndNode)):
             pass
@@ -85,15 +87,23 @@ def generate_code(
             node_lines = [f'  state {node.id} <<choice>>']
             if node.note:
                 node_lines.append(f'  note right of {node.id}\n    {node.note}\n  end note')
-
+        is_broadcast_fork = len(graph.edges_by_source.get(node.id, [])) > 1
+        if is_broadcast_fork:
+            broadcast_forks[node.id] = NodeId(node.id + '_fork')  # TODO: Need to guarantee this is unique
+            node_lines.append(f'  state {broadcast_forks[node.id]} <<fork>>')
         lines.extend(node_lines)
 
     lines.append('')
 
     for source_id, node in graph.nodes.items():
         render_source_id = source_id
+
         if source_id == StartNode.start.id:
             render_source_id = '[*]'  # Mermaid uses [*] to denote the start state
+
+        if source_id in broadcast_forks:
+            lines.append(f'  {render_source_id} --> {broadcast_forks[source_id]}')
+            render_source_id = broadcast_forks[source_id]
 
         for edge in graph.edges_by_source[source_id]:
             destination_id = edge.destination_id

@@ -46,6 +46,16 @@ class Reducer[StateT, DepsT, InputT, OutputT]:
         raise NotImplementedError
 
 
+class NullReducer(Reducer[Any, Any, Any, Any]):
+    def reduce(self, ctx: ReducerContext[Any, Any, Any]) -> None:
+        # No-op reducer
+        pass
+
+    def finalize(self, ctx: ReducerContext[Any, Any, None]) -> Any:
+        return None  # or whatever default value is appropriate
+
+
+# TODO: Make this accept a single context input rather than three inputs
 type ReducerFactory[StateT, DepsT, InputT, OutputT] = Callable[
     [StateT, DepsT, InputT], Reducer[StateT, DepsT, InputT, OutputT]
 ]

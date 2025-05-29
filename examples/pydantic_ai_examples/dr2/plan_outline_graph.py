@@ -25,8 +25,9 @@ from typing import Literal
 from pydantic import BaseModel
 from pydantic_graph.v2.graph import GraphBuilder
 from pydantic_graph.v2.transform import TransformContext
+from pydantic_graph.v2.util import TypeExpression
 
-from .nodes import Interruption, Prompt, TypeUnion
+from .nodes import Prompt
 from .shared_types import MessageHistory, Outline
 
 
@@ -144,22 +145,22 @@ g = GraphBuilder(
     state_type=State,
     deps_type=Deps,
     input_type=MessageHistory,
-    output_type=TypeUnion[
+    output_type=TypeExpression[
         Refuse | OutlineStageOutput | Interruption[YieldToHuman, MessageHistory]
     ],
 )
 
 # Nodes
-handle_user_message = g.build_step(
+handle_user_message = g.step(
     Prompt(
         input_type=MessageHistory,
-        output_type=TypeUnion[Refuse | Clarify | Proceed],
+        output_type=TypeExpression[Refuse | Clarify | Proceed],
         prompt='Decide how to proceed from user message',  # prompt
     ),
     node_id='handle_user_message',
 )
 
-generate_outline = g.build_step(
+generate_outline = g.step(
     Prompt(
         input_type=GenerateOutlineInputs,
         output_type=Outline,
@@ -168,10 +169,10 @@ generate_outline = g.build_step(
     node_id='generate_outline',
 )
 
-review_outline = g.build_step(
+review_outline = g.step(
     Prompt(
         input_type=ReviewOutlineInputs,
-        output_type=TypeUnion[ReviseOutline | ApproveOutline],
+        output_type=TypeExpression[ReviseOutline | ApproveOutline],
         prompt='Review the outline',
     ),
     node_id='review_outline',

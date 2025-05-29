@@ -9,11 +9,11 @@ from typing import Any, Callable, Never, cast, get_args, get_origin, overload
 from anyio import Event, create_memory_object_stream, create_task_group
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
-from typing_extensions import assert_never
+from typing_extensions import Literal, assert_never
 
 from pydantic_graph.v2.decision import Decision, DecisionBranchBuilder
 from pydantic_graph.v2.id_types import ForkId, JoinId, NodeRunId
-from pydantic_graph.v2.join import Join, Reducer, ReducerContext
+from pydantic_graph.v2.join import Join, Reducer, ReducerContext, ReducerFactory
 from pydantic_graph.v2.mermaid import StateDiagramDirection, generate_code
 from pydantic_graph.v2.node import (
     END,
@@ -34,7 +34,7 @@ from pydantic_graph.v2.node_types import (
 from pydantic_graph.v2.parent_forks import ParentFork, ParentForkFinder
 from pydantic_graph.v2.step import Step, StepCallProtocol, StepContext
 from pydantic_graph.v2.transform import AnyTransformFunction, TransformContext, TransformFunction
-from pydantic_graph.v2.util import get_callable_name, get_unique_string
+from pydantic_graph.v2.util import TypeExpression, get_callable_name, get_unique_string
 
 
 @dataclass
@@ -66,16 +66,12 @@ class Edge:
         return self.user_label
 
 
-class TypeUnion[T]:
-    pass
-
-
 @dataclass
 class GraphBuilder[StateT, DepsT, GraphInputT, GraphOutputT]:
     state_type: type[StateT]
     deps_type: type[DepsT]
     input_type: type[GraphInputT]
-    output_type: type[TypeUnion[GraphOutputT]] | type[GraphOutputT]
+    output_type: type[TypeExpression[GraphOutputT]] | type[GraphOutputT]
 
     parallel: bool = True  # if False, allow direct state modification and don't copy state sent to steps, but disallow parallel node execution
 
@@ -91,27 +87,83 @@ class GraphBuilder[StateT, DepsT, GraphInputT, GraphOutputT]:
     )
 
     # Node building:
-    def build_step[InputT, OutputT](
+    @overload
+    def step[InputT, OutputT](
+        self,
+        *,
+        node_id: str | None = None,
+        label: str | None = None,
+    ) -> Callable[[StepCallProtocol[StateT, DepsT, InputT, OutputT]], Step[StateT, DepsT, InputT, OutputT]]: ...
+
+    @overload
+    def step[InputT, OutputT](
         self,
         call: StepCallProtocol[StateT, DepsT, InputT, OutputT],
         *,
         node_id: str | None = None,
         label: str | None = None,
-    ) -> Step[StateT, DepsT, InputT, OutputT]:
-        if node_id is None:
-            # TODO: Infer this from the parent frame variable assignment
-            node_id = f'step-{get_callable_name(call)}-{get_unique_string()}'
-        return Step[StateT, DepsT, InputT, OutputT](id=NodeId(node_id), call=call, user_label=label)
+    ) -> Step[StateT, DepsT, InputT, OutputT]: ...
 
-    def build_join[InputT, OutputT](
+    def step[InputT, OutputT](
         self,
-        reducer_factory: Callable[[StateT, DepsT, InputT], Reducer[StateT, DepsT, InputT, OutputT]],
+        call: StepCallProtocol[StateT, DepsT, InputT, OutputT] | None = None,
         *,
         node_id: str | None = None,
-    ) -> Join[StateT, DepsT, InputT, OutputT]:
+        label: str | None = None,
+    ) -> (
+        Step[StateT, DepsT, InputT, OutputT]
+        | Callable[[StepCallProtocol[StateT, DepsT, InputT, OutputT]], Step[StateT, DepsT, InputT, OutputT]]
+    ):
+        if call is None:
+
+            def decorator(
+                func: StepCallProtocol[StateT, DepsT, InputT, OutputT],
+            ) -> Step[StateT, DepsT, InputT, OutputT]:
+                return self.step(call=func, node_id=node_id, label=label)
+
+            return decorator
+
         if node_id is None:
             # TODO: Infer this from the parent frame variable assignment
-            node_id = f'join-{get_callable_name(reducer_factory)}-{get_unique_string()}'
+            node_id = f'step_{get_callable_name(call)}_{get_unique_string()}'
+        return Step[StateT, DepsT, InputT, OutputT](id=NodeId(node_id), call=call, user_label=label)
+
+    @overload
+    def join[InputT, OutputT](
+        self,
+        *,
+        node_id: str | None = None,
+    ) -> Callable[[ReducerFactory[StateT, DepsT, InputT, OutputT]], Join[StateT, DepsT, InputT, OutputT]]: ...
+
+    @overload
+    def join[InputT, OutputT](
+        self,
+        reducer_factory: ReducerFactory[StateT, DepsT, InputT, OutputT],
+        *,
+        node_id: str | None = None,
+    ) -> Join[StateT, DepsT, InputT, OutputT]: ...
+
+    def join[InputT, OutputT](
+        self,
+        reducer_factory: ReducerFactory[StateT, DepsT, InputT, OutputT] | None = None,
+        *,
+        node_id: str | None = None,
+    ) -> (
+        Join[StateT, DepsT, InputT, OutputT]
+        | Callable[[ReducerFactory[StateT, DepsT, InputT, OutputT]], Join[StateT, DepsT, InputT, OutputT]]
+    ):
+        if reducer_factory is None:
+
+            def decorator(
+                reducer_factory: ReducerFactory[StateT, DepsT, InputT, OutputT],
+            ) -> Join[StateT, DepsT, InputT, OutputT]:
+                return self.join(reducer_factory=reducer_factory, node_id=node_id)
+
+            return decorator
+
+        if node_id is None:
+            # TODO: Infer this from the parent frame variable assignment
+            node_id = f'join_{get_callable_name(reducer_factory)}_{get_unique_string()}'
         return Join[StateT, DepsT, InputT, OutputT](
             id=JoinId(NodeId(node_id)),
             reducer_factory=reducer_factory,
@@ -120,15 +172,20 @@ class GraphBuilder[StateT, DepsT, GraphInputT, GraphOutputT]:
     @staticmethod
     def decision(*, node_id: str | None = None, note: str | None = None) -> Decision[StateT, DepsT, Never, Never]:
         if node_id is None:
-            node_id = f'decision-{get_unique_string()}'
+            node_id = f'decision_{get_unique_string()}'
         return Decision[StateT, DepsT, Never, Never](id=NodeId(node_id), branches=[], note=note)
 
     # TODO: Add a method more closely related to edge building that accepts the input node as a way to get a type-checked input
     #   Alternatively, add InputT as a type on Decision, and include it in the output of DecisionBranchBuilder, and do type-checking of it.
     def handle[SourceT](
-        self, case: type[SourceT], *, matches: Callable[[Any], bool] | None = None, label: str | None = None
+        self,
+        case: type[SourceT] | type[TypeExpression[SourceT]],
+        *,
+        matches: Callable[[Any], bool] | None = None,
+        label: str | None = None,
     ) -> DecisionBranchBuilder[StateT, DepsT, SourceT, Any, SourceT]:
-        return DecisionBranchBuilder(case, matches, transforms=(), user_label=label)
+        extracted_case = cast(type[SourceT], get_args(case)[0] if get_origin(case) is TypeExpression else case)
+        return DecisionBranchBuilder(extracted_case, matches, transforms=(), user_label=label)
 
     # note: forks are built by calls to `xyz_spread`, by calling `start_with` multiple times, or by calling `edge` multiple times with the same source
 
@@ -403,6 +460,7 @@ class GraphBuilder[StateT, DepsT, GraphInputT, GraphOutputT]:
         self._edges_by_source[edge.source_id].append(edge)
 
     def build(self, parallel: bool = True) -> Graph[StateT, DepsT, GraphInputT, GraphOutputT]:
+        # TODO: Warn/error if there is no start node / edges, or end node / edges
         # TODO: Warn/error if the graph is not connected
         # TODO: Warn/error if any non-End node is a dead end
         # TODO: Error if the graph does not meet the every-join-has-a-parent-fork requirement (otherwise can't know when to proceed past joins)
@@ -416,7 +474,7 @@ class GraphBuilder[StateT, DepsT, GraphInputT, GraphOutputT]:
         parent_forks = _collect_dominating_forks(nodes, edges)
 
         output_type = cast(type[GraphOutputT], self.output_type)
-        if get_origin(output_type) is TypeUnion:
+        if get_origin(output_type) is TypeExpression:
             output_type = get_args(output_type)[0]
 
         return Graph[StateT, DepsT, GraphInputT, GraphOutputT](
@@ -468,9 +526,18 @@ def _collect_dominating_forks(
     nodes = set(graph_nodes)
     start_ids = {StartNode.start.id}
     edges = {source_id: [e.destination_id for e in graph_edges_by_source[source_id]] for source_id in nodes}
+    for node_id, node in graph_nodes.items():
+        if isinstance(node, Decision):
+            # For decisions, we need to add edges for the branches
+            for branch in node.branches:
+                # If any branches have a spread, it's a bug in graph building
+                assert not branch.spread, 'Decision branches should not be spreads at this point'
+                edges[node_id].append(branch.route_to.id)
+
     fork_ids = {
         node_id for node_id, node in graph_nodes.items() if isinstance(node, Spread) or len(edges.get(node_id, [])) > 1
     }
+
     finder = ParentForkFinder(
         nodes=nodes,
         start_ids=start_ids,
@@ -502,6 +569,9 @@ class Graph[StateT, DepsT, InputT, OutputT]:
     parent_forks: dict[JoinId, ParentFork[NodeId]]
 
     parallel: bool  # if False, allow direct state modification and don't copy state sent to steps, but disallow parallel node execution
+
+    def __post_init__(self):
+        assert StartNode.start.id in self.nodes, 'Graph must have a start node'
 
     @property
     def start_edges(self) -> list[Edge]:
@@ -629,6 +699,7 @@ class GraphRun[StateT, DepsT, InputT, OutputT]:
                 )
                 self._handle_walk(start_state, synchronizer)
                 await finish_event.wait()
+                tg.cancel_scope.cancel()
 
         if self.result is None:
             raise RuntimeError(
@@ -645,6 +716,7 @@ class GraphRun[StateT, DepsT, InputT, OutputT]:
             self._handle_start(walk, synchronizer)
         elif isinstance(node, Step):
             self._begin_step(node, walk, synchronizer)
+            return  # We need to return early here because the `_end_step` call will do the clean-up
         elif isinstance(node, Join):
             self._handle_reduce_join(node, walk)
         elif isinstance(node, Spread):
@@ -654,11 +726,11 @@ class GraphRun[StateT, DepsT, InputT, OutputT]:
         elif isinstance(node, EndNode):
             self._handle_end(walk)
 
+        self._clean_up_walk(walk, synchronizer)
+
+    def _clean_up_walk(self, walk: GraphWalkState, synchronizer: GraphRunSynchronizer) -> None:
         self.active_walks.pop(walk.walker_id)
-
-        # Now that we've handled edges for the node, we can check if any joins are ready to proceed, and if so, proceed
         self._handle_finalize_joins(walk, synchronizer)
-
         if not self.active_walks:
             synchronizer.finish_event.set()
 
@@ -677,6 +749,7 @@ class GraphRun[StateT, DepsT, InputT, OutputT]:
 
     def _end_step(self, walk: GraphWalkState, output: Any, synchronizer: GraphRunSynchronizer) -> None:
         self._handle_edges(walk, output, output, synchronizer)
+        self._clean_up_walk(walk, synchronizer)
 
     def _handle_reduce_join(self, join: Join[Any, Any, Any, Any], walk: GraphWalkState) -> None:
         # Find the matching fork run id in the stack; this will be used to look for an active reducer
@@ -711,6 +784,8 @@ class GraphRun[StateT, DepsT, InputT, OutputT]:
                 inputs_match = match_tester(walk.node_inputs)
             elif branch.source in {Any, object}:
                 inputs_match = True
+            elif get_origin(branch.source) is Literal:
+                inputs_match = walk.node_inputs in get_args(branch.source)
             else:
                 inputs_match = isinstance(walk.node_inputs, branch.source)
 

@@ -4,11 +4,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Never
 
+from typing_extensions import Literal, get_args, get_origin
+
 from pydantic_graph.v2.id_types import NodeId
 from pydantic_graph.v2.join import Join
 from pydantic_graph.v2.node import EndNode
 from pydantic_graph.v2.step import Step
 from pydantic_graph.v2.transform import TransformFunction
+from pydantic_graph.v2.util import TypeExpression
 
 if TYPE_CHECKING:
     from pydantic_graph.v2.node_types import AnyDestinationNode
@@ -18,6 +21,7 @@ if TYPE_CHECKING:
 class Decision[StateT, DepsT, SourceT, EndT]:
     id: NodeId
     branches: list[DecisionBranch[StateT, DepsT, Any, Any]]
+    # TODO: Add a field for the label for the input edge
     note: str | None
 
     def branch[S, E, S2, E2](
@@ -35,6 +39,7 @@ class Decision[StateT, DepsT, SourceT, EndT]:
 @dataclass
 class DecisionBranch[StateT, DepsT, SourceT, EndT]:
     source: type[SourceT]
+    # TODO: Support broadcast forks by allowing `route_to` to be a sequence of nodes(?)
     route_to: AnyDestinationNode
     # TODO: Rename `matches` to `test_match` or similar
     matches: Callable[[Any], bool] | None = None
@@ -48,7 +53,17 @@ class DecisionBranch[StateT, DepsT, SourceT, EndT]:
 
     @property
     def label(self) -> str | None:
-        return self.user_label or getattr(self.source, '__name__', str(self.source))
+        if self.user_label:
+            return self.user_label
+
+        source = self.source
+        if get_origin(self.source) is TypeExpression:
+            source = get_args(self.source)[0]
+
+        if get_origin(source) is Literal:
+            return ', '.join(repr(arg) for arg in get_args(source))
+
+        return getattr(source, '__name__', str(self.source))
 
     @property
     def post_spread_label(self) -> str | None:
@@ -71,6 +86,7 @@ class DecisionBranchBuilder[StateT, DepsT, SourceT, EdgeInputT, EdgeOutputT]:
 
     def route_to(  # analogous to GraphBuilder.edge
         self,
+        # TODO: Can we support broadcast forks somehow?
         node: Step[StateT, DepsT, EdgeOutputT, Any]
         | Join[StateT, DepsT, EdgeOutputT, Any]
         | Decision[StateT, DepsT, EdgeOutputT, Any],
