@@ -181,19 +181,19 @@ review_outline = g.step(
 
 # Edges:
 g.start_with(handle_user_message)
-g.edge(
+g.add_edge(
     handle_user_message,
     destination=g.decision(node_id='handle_user_decision', note='Handle user decision')
     .branch(g.handle(Refuse).end())
     .branch(g.handle(Proceed).transform(transform_proceed).route_to(generate_outline))
     .branch(g.handle(Clarify).transform(transform_clarify).end()),
 )
-g.edge(
+g.add_edge(
     generate_outline,
     transform=transform_outline,
     destination=review_outline,
 )
-g.edge(
+g.add_edge(
     review_outline,
     g.decision(node_id='review_outline_decision')
     .branch(

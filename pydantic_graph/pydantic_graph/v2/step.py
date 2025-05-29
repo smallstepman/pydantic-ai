@@ -8,6 +8,8 @@ from pydantic_graph.v2.id_types import NodeId
 
 
 # TODO: Should StepContext be passed to joins/forks/decisions? Like, unified with ReducerContext etc.?
+# TODO: Make InputT default to object so it can be dropped when not relevant
+# TODO: Do we really need both state and deps???
 class StepContext[StateT, DepsT, InputT]:
     """The main reason this is not a dataclass is that we need it to be covariant in its type parameters."""
 

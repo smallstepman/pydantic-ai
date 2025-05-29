@@ -34,43 +34,61 @@ class ReducerContext[StateT, DepsT, InputT]:
         return f'{self.__class__.__name__}(state={self.state}, deps={self.deps}, inputs={self.inputs})'
 
 
-class Reducer[StateT, DepsT, InputT, OutputT]:
-    def __init__(self, state: StateT, deps: DepsT, inputs: InputT):
-        self._state = state
-        self._deps = deps
-
-    def reduce(self, ctx: ReducerContext[StateT, DepsT, InputT]) -> None:
-        raise NotImplementedError
-
-    def finalize(self, ctx: ReducerContext[StateT, DepsT, None]) -> OutputT:
-        raise NotImplementedError
-
-
-class NullReducer(Reducer[Any, Any, Any, Any]):
-    def reduce(self, ctx: ReducerContext[Any, Any, Any]) -> None:
-        # No-op reducer
-        pass
-
-    def finalize(self, ctx: ReducerContext[Any, Any, None]) -> Any:
-        return None  # or whatever default value is appropriate
-
-
-# TODO: Make this accept a single context input rather than three inputs
+type ReduceFunction[StateT, DepsT, InputT] = Callable[[ReducerContext[StateT, DepsT, InputT]], None]
+type FinalizeFunction[StateT, DepsT, OutputT] = Callable[[ReducerContext[StateT, DepsT, None]], OutputT]
+type Reducer[StateT, DepsT, InputT, OutputT] = tuple[
+    ReduceFunction[StateT, DepsT, InputT], FinalizeFunction[StateT, DepsT, OutputT]
+]
 type ReducerFactory[StateT, DepsT, InputT, OutputT] = Callable[
-    [StateT, DepsT, InputT], Reducer[StateT, DepsT, InputT, OutputT]
+    [ReducerContext[StateT, DepsT, InputT]], Reducer[StateT, DepsT, InputT, OutputT]
 ]
 
 
-def list_reducer[T](item_type: type[T]) -> type[Reducer[object, object, T, list[T]]]:
-    # append to list
-    raise NotImplementedError
+def reduce_to_list[T](item_type: type[T]) -> ReducerFactory[object, object, T, list[T]]:
+    def reducer_factory(
+        ctx: ReducerContext[object, object, T],
+    ) -> Reducer[object, object, T, list[T]]:
+        state: list[T] = [ctx.inputs]
+
+        def reduce(_ctx: ReducerContext[object, object, T]) -> None:
+            state.append(_ctx.inputs)
+
+        def finalize(_ctx: ReducerContext[object, object, None]) -> list[T]:
+            return state
+
+        return reduce, finalize
+
+    return reducer_factory
 
 
-def dict_reducer[T: dict[Any, Any]](
-    dict_type: type[T],
-) -> type[Reducer[object, object, T, T]]:
-    # update dict
-    raise NotImplementedError
+def reduce_to_dict[T: dict[Any, Any]](dict_type: type[T]) -> ReducerFactory[object, object, T, T]:
+    def reducer_factory(
+        ctx: ReducerContext[object, object, T],
+    ) -> Reducer[object, object, T, T]:
+        state: T = dict_type()
+        state.update(ctx.inputs)
+
+        def reduce(_ctx: ReducerContext[object, object, T]) -> None:
+            state.update(_ctx.inputs)
+
+        def finalize(_ctx: ReducerContext[object, object, None]) -> T:
+            return state
+
+        return reduce, finalize
+
+    return reducer_factory
+
+
+def reduce_to_none(
+    ctx: ReducerContext[object, object, Any],
+) -> tuple[ReduceFunction[object, object, Any], FinalizeFunction[object, object, None]]:
+    def reduce(_ctx: ReducerContext[object, object, Any]) -> None:
+        pass
+
+    def finalize(_ctx: ReducerContext[object, object, None]) -> None:
+        pass
+
+    return reduce, finalize
 
 
 @dataclass
